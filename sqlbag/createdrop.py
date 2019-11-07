@@ -29,7 +29,7 @@ def database_exists(db_url, test_can_select=False):
     if not test_can_select:
         if db_type == "sqlite":
             return name is None or name == ":memory:" or os.path.exists(name)
-        elif db_type in ["postgresql", "mysql"]:
+        elif db_type in ["postgresql", "mysql", "redshift"]:
             with admin_db_connection(url) as s:
                 return _database_exists(s, name)
     return can_select(url)
@@ -53,7 +53,7 @@ def _database_exists(session_or_connection, name):
     url = copy_url(e.url)
     dbtype = url.get_dialect().name
 
-    if dbtype == "postgresql":
+    if dbtype in ["postgresql", "redshift"]:
         EXISTENCE = """
             SELECT 1
             FROM pg_catalog.pg_database
@@ -126,16 +126,30 @@ def drop_database(db_url):
                     REVOKE = "revoke connect on database {} from public"
                     revoke = REVOKE.format(quoted_identifier(name))
                     c.execute(revoke)
-
-                kill_other_connections(c, name, hardkill=True)
-
-                c.execute(
-                    """
-                    drop database if exists {};
-                """.format(
-                        quoted_identifier(name)
+                    kill_other_connections(c, name, hardkill=True)
+                    c.execute(
+                        """
+                        drop database if exists {};
+                    """.format(
+                            quoted_identifier(name)
+                        )
                     )
-                )
+                elif dbtype == "redshift":
+                    revoke = """
+                        select pg_terminate_backend(procpid)
+                        from pg_stat_activity where datname='{}'
+                    """.format(
+                        name
+                    )
+                    c.execute(revoke)
+                    # There's no IF EXISTS in Redshift
+                    c.execute(
+                        """
+                        drop database {};
+                    """.format(
+                            quoted_identifier(name)
+                        )
+                    )
             return True
     else:
         return False
@@ -177,6 +191,25 @@ def temporary_database(dialect="postgresql", do_not_delete=False, host=None):
             if not do_not_delete:
                 os.remove(tmp.name)
 
+    elif dialect == "redshift":
+        try:
+            username = os.environ["REDSHIFT_USER"]
+            host = os.environ["REDSHIFT_HOST"]
+            password = os.environ["REDSHIFT_PASSWORD"]
+        except KeyError:
+            raise KeyError(
+                "Set REDSHIFT_HOST, REDSHIFT_USER and REDSHIFT_PASSWORD environment variables"
+            )
+        tempname = temporary_name()
+        url = "redshift+psycopg2://{}:{}@{}/{}".format(
+            username, password, host, tempname
+        )
+        try:
+            create_database(url)
+            yield url
+        finally:
+            if not do_not_delete:
+                drop_database(url)
     else:
         tempname = temporary_name()
 

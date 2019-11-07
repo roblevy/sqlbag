@@ -216,10 +216,13 @@ def admin_db_connection(db_url):
         if not url.username:
             url.username = getpass.getuser()
 
+    elif dbtype == "redshift":
+        url.database = "dev"
+
     elif not dbtype == "sqlite":
         url.database = None
 
-    if dbtype == "postgresql":
+    if dbtype in ["postgresql", "redshift"]:
         with C(url, poolclass=NullPool, isolation_level="AUTOCOMMIT") as c:
             yield c
 
@@ -240,7 +243,7 @@ def admin_db_connection(db_url):
 def _killquery(dbtype, dbname, hardkill):
     where = []
 
-    if dbtype == "postgresql":
+    if dbtype in ["postgresql", "redshift"]:
         sql = PG_KILL
 
         if not hardkill:
